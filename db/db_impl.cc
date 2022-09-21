@@ -684,6 +684,7 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
   delete compact->builder;
   compact->builder = NULL;
 
+  // 直接将当前文件添加到下一层的 Group 中
 	compact->output_physical_file.number = compact->current_output()->number;
 	compact->output_physical_file.file_size = compact->current_output()->file_size;
 	compact->output_physical_file.smallest = compact->current_output()->smallest;
@@ -727,12 +728,12 @@ Status DBImpl::InstallCompactionResults(CompactionState* compact) {
       static_cast<long long>(compact->total_bytes));
 
   // Add compaction outputs
-  compact->compaction->AddInputDeletions(compact->compaction->edit());
+  compact->compaction->AddInputDeletions(compact->compaction->edit()); // 删除掉上层的 组。逻辑执行
   const int level = compact->compaction->level();
   const LogicalMetaData& out = compact->output_logical_file;
 
-  compact->compaction->edit()->AddLogicalFile(level+1, out);
-  return versions_->LogAndApply(compact->compaction->edit(), &mutex_);
+  compact->compaction->edit()->AddLogicalFile(level+1, out); // 将生成的 LogicalFile （Group） 添加到下一层中
+  return versions_->LogAndApply(compact->compaction->edit(), &mutex_); // 执行真正的物理操作
 }
 
 Status DBImpl::InstallEarlyCleaningResults() {
@@ -758,13 +759,13 @@ void DBImpl::EarlyCleaning(std::vector<uint64_t>& clean) {
 	for (int i = 0; i < clean.size(); i++) {
 		uint64_t file_number = clean[i];
 		std::string file_name = TableFileName(dbname_, file_number);
-		env_->DeleteFile(file_name);
+		env_->DeleteFile(file_name); // 早期删除对应的物理 SST
 	}
 }
 
 Status DBImpl::ConcatenatingCompaction(CompactionState* compact) {
   Status status;
-  Iterator* input = versions_->MakeInputIterator(compact->compaction);
+  Iterator* input = versions_->MakeInputIterator(compact->compaction); // 得到一个迭代器，指向当前需要合并的所有 Group
   input->SeekToFirst();
 
   ParsedInternalKey ikey;
@@ -784,21 +785,21 @@ Status DBImpl::ConcatenatingCompaction(CompactionState* compact) {
   for (; input->Valid() && !shutting_down_.Acquire_Load(); ) {
     counter++;
     // determine if the current iterator is a new sstable's start position.
-    if (input->IsNewSSTTable()) {
+    if (input->IsNewSSTTable()) { // 如果迭代器指向了一个新的 sstable 的开始位置
       // no overlap. because the first key of the current is the smallest, so all the keys are smaller than other ssts.
-      PhysicalMetaData *phy_file = input->GetSSTTableMeta();
+      PhysicalMetaData *phy_file = input->GetSSTTableMeta(); // 获取当前 sstable 的元数据
       //printf("%d\n", (*phy_file).number);
-      if (input->IsOverlapped() == 0) {
+      if (input->IsOverlapped() == 0) { // 如果当前 sstable 没有和其他 sstable 有重叠
         // write current file to keep logicial sstable 's key order
-        FinishCompactionOutputFile(compact, input);
+        FinishCompactionOutputFile(compact, input); // 将当前 sstable 直接写入到输出文件中，不需要合并
         // old level 的 sstable  如何删除 ?? 
-        compact->output_logical_file.AppendPhysicalFile(*phy_file);
-        input->NextSSTTable();
+        compact->output_logical_file.AppendPhysicalFile(*phy_file); // 将当前 sstable 的元数据添加到 logical sstable （group） 的元数据中
+        input->NextSSTTable(); // 迭代器指向下一个 sstable
         continue;
       } else {
         // early_cleaned.push_back(phy_file->number);
         // if (early_cleaned.size() > 10) {
-        //   EarlyCleaning(early_cleaned);
+        //   EarlyCleaning(early_cleaned); // 早期删除对应的物理 SST
         //   early_cleaned.clear();
         // }
       }
@@ -855,12 +856,12 @@ Status DBImpl::ConcatenatingCompaction(CompactionState* compact) {
         compact->current_output()->smallest.DecodeFrom(key);
       }
       compact->current_output()->largest.DecodeFrom(key);
-      compact->builder->Add(key, input->value());
+      compact->builder->Add(key, input->value()); // 合并后的数据输出到物理文件
 
       // Close output file if it is big enough
       if (compact->builder->FileSize() >=
           compact->compaction->MaxOutputFileSize()) {
-        status = FinishCompactionOutputFile(compact, input);
+        status = FinishCompactionOutputFile(compact, input); // 将对应的物理文件添加到 Group 中
         fly[level]++;
         if (!status.ok()) {
           break;
@@ -910,7 +911,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   mutex_.Unlock();
   compact->output_logical_file.number = versions_->NewFileNumber();
 
-  status = ConcatenatingCompaction(compact);
+  status = ConcatenatingCompaction(compact); // 合并生成新的逻辑 SST，即 Group
   mutex_.Lock();
   if (status.ok()) {
     status = InstallCompactionResults(compact);  // store the edit to manifest.
@@ -1167,9 +1168,9 @@ Status DBImpl::BackgroundCompaction(int level) {
   } else {
     // TODO level
     Log(options_.info_log, "Level %d begin PickCompaction\n", level);
-    c = versions_->PickCompaction(level);
+    c = versions_->PickCompaction(level); // 选择要执行 compaction 的 level
     if (c) {
-      levels_locked_[c->level()] = true;
+      levels_locked_[c->level()] = true; // 加锁
       Log(options_.info_log, "Level %d PickCompaction logical_files_inputs_: %d\n",
           level, c->logical_files_inputs_.size());
     }
@@ -1182,13 +1183,13 @@ Status DBImpl::BackgroundCompaction(int level) {
     CompactionState* compact = new CompactionState(c);  // CompactionState contains the output structure
     Log(options_.info_log, "Level %d before DoCompactionWork logical_files_inputs_: %d\n",
           level, compact->compaction->logical_files_inputs_.size());
-    status = DoCompactionWork(compact);
+    status = DoCompactionWork(compact); // 执行 compact
     if (!status.ok()) {
       RecordBackgroundError(status);
     }
     CleanupCompaction(compact);
     c->ReleaseInputs();
-    DeleteObsoleteFiles();
+    DeleteObsoleteFiles(); // 删除旧的文件
 	}
 
   if (c) {

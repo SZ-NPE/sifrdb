@@ -25,7 +25,7 @@ struct PhysicalMetaData {
   PhysicalMetaData() : refs(0), allowed_seeks(1 << 30), file_size(0) { }
 };
 
-struct LogicalMetaData {
+struct LogicalMetaData { // 就是论文中 Group 的概念，对应了多个物理 SST
   int refs;
   int allowed_seeks;
   uint64_t number;	

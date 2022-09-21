@@ -1376,18 +1376,18 @@ Iterator* VersionSet::MakeInputIterator(Compaction* c) {
   // TODO(opt): use concatenating iterator for level-0 if there is no overlap
 
   //number of iterators
-	const int space =  c->logical_files_inputs_.size();
+	const int space =  c->logical_files_inputs_.size(); // 对应的被选中参与 Compaction 的 Group 的个数
   Iterator** list = new Iterator*[space];
   int num = 0;
 
-  for (int i = 0; i < space; i++) {
+  for (int i = 0; i < space; i++) { // 对每个 Group 创建迭代器，因为每个 Group 有序
     list[num++] = NewTwoLevelIterator(
         new Version::LogicalSSTNumIterator(icmp_, c->logical_files_inputs_[i]),
         &GetFileIterator, table_cache_, options);
   }
 
   assert(num <= space);
-  Iterator* result = NewMergingIterator(&icmp_, list, num);
+  Iterator* result = NewMergingIterator(&icmp_, list, num); // 将所有的 Group 迭代器合并成一个
   delete[] list;
   return result;
 }
